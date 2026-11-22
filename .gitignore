@@ -1,0 +1,17 @@
+# Xcode
+build/
+DerivedData/
+*.xcresult
+xcuserdata/
+*.xcuserstate
+.swiftpm/
+
+# macOS
+.DS_Store
+
+# Content pipeline (large downloads and local environments)
+tools/content/.venv/
+tools/content/.cache/
+tools/content/.nltk_data/
+__pycache__/
+*.pyc
