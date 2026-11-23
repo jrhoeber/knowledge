@@ -2,24 +2,32 @@ import Foundation
 
 /// Vocabulary questions: show a word, pick its definition.
 ///
-/// Each word stores every common definition (the answer set). A question tests one
-/// of them, favoring the most common, and fills the other three options with
-/// definitions of *other* words that share the tested definition's part of speech
-/// and sit at a similar difficulty. Distractors are rejected when they could also be
-/// a fair definition of the word: if they come from a listed synonym, mention the
-/// word, or share a meaningful word stem with any of its definitions.
+/// Each quiz item is one meaning of a word, with its own difficulty (how widely that
+/// meaning is known), so a word with two common meanings is two items. A question
+/// tests the item's meaning, shows every common meaning of the word afterwards, and
+/// fills the other three options with definitions of *other* words that share the
+/// tested meaning's part of speech and sit at a similar difficulty. Distractors are
+/// rejected when they could also be a fair definition of the word: if they come from
+/// a listed synonym, mention the word, or share a meaningful word stem with any of
+/// its definitions.
 final class VocabularyProvider: QuestionProvider {
     let topic = Topic.vocabulary
     private let database: SQLiteDatabase
-    private let wordRanges: [Int: ClosedRange<Int>]
+    /// Difficulty → item ID range.
+    private let itemRangesByDifficulty: [Int: ClosedRange<Int>]
     /// Part-of-speech code → difficulty → sense ID range.
     private let senseRanges: [String: [Int: ClosedRange<Int>]]
     private let allSenses: ClosedRange<Int>
 
+    private struct Item {
+        let senseID: Int
+        let wordID: Int
+        let difficulty: Int
+    }
+
     private struct Word {
         let id: Int
         let text: String
-        let difficulty: Int
         let related: [String]
     }
 
@@ -28,7 +36,6 @@ final class VocabularyProvider: QuestionProvider {
         let partOfSpeech: String
         let gloss: String
         let example: String?
-        let isQuizzable: Bool
     }
 
     private struct Candidate {
@@ -41,17 +48,17 @@ final class VocabularyProvider: QuestionProvider {
     init(database: SQLiteDatabase) throws {
         self.database = database
 
-        var wordRanges: [Int: ClosedRange<Int>] = [:]
-        let wordRows = try database.query(
-            "SELECT difficulty, MIN(id), MAX(id), COUNT(*) FROM vocab_words GROUP BY difficulty"
+        var itemRanges: [Int: ClosedRange<Int>] = [:]
+        let itemRows = try database.query(
+            "SELECT difficulty, MIN(id), MAX(id), COUNT(*) FROM vocab_items GROUP BY difficulty"
         ) { (difficulty: $0.int(0), first: $0.int(1), last: $0.int(2), count: $0.int(3)) }
-        for row in wordRows {
+        for row in itemRows {
             guard row.last - row.first + 1 == row.count else {
-                throw QuestionProviderError.nonContiguousRange(table: "vocab_words")
+                throw QuestionProviderError.nonContiguousRange(table: "vocab_items")
             }
-            wordRanges[row.difficulty] = row.first...row.last
+            itemRanges[row.difficulty] = row.first...row.last
         }
-        self.wordRanges = wordRanges
+        itemRangesByDifficulty = itemRanges
 
         var senseRanges: [String: [Int: ClosedRange<Int>]] = [:]
         let senseRows = try database.query(
@@ -71,31 +78,28 @@ final class VocabularyProvider: QuestionProvider {
     }
 
     func itemRanges(difficulty: Int) -> [ClosedRange<Int>] {
-        wordRanges[difficulty].map { [$0] } ?? []
+        itemRangesByDifficulty[difficulty].map { [$0] } ?? []
     }
 
-    /// Word IDs are frequency ranks, so leaning toward the front of a level asks the
-    /// words people meet most often first. Rarer words still come up, just less often.
+    /// Item IDs within a level run from the meanings people meet most often to the
+    /// rarest, so leaning toward the front of a level asks the most useful ones first.
+    /// Rarer meanings still come up, just less often.
     func randomItem(in range: ClosedRange<Int>, using generator: inout SeededGenerator) -> Int {
         CommonFirstSampler.item(in: range, unit: Double.random(in: 0..<1, using: &generator))
     }
 
     func makeQuestion(itemID: Int, using generator: inout SeededGenerator) throws -> Question {
-        guard let word = try fetchWord(id: itemID) else {
+        guard let item = try fetchItem(id: itemID), let word = try fetchWord(id: item.wordID) else {
             throw QuestionProviderError.missingItem(topic: topic, itemID: itemID)
         }
-        let senses = try fetchSenses(wordID: itemID)
-        guard !senses.isEmpty else {
+        let senses = try fetchSenses(wordID: item.wordID)
+        guard let tested = senses.first(where: { $0.id == item.senseID }) else {
             throw QuestionProviderError.missingItem(topic: topic, itemID: itemID)
         }
 
-        // Test one definition, strongly favoring the earlier (more common) ones: with
-        // several meanings the first is tested a little over half the time.
-        let testable = senses.contains(where: \.isQuizzable) ? senses.filter(\.isQuizzable) : senses
-        let weights = testable.indices.map { pow(Double($0 + 1), -1.5) }
-        let tested = testable[generator.weightedIndex(weights) ?? 0]
-
-        let distractors = try pickDistractors(for: tested, of: word, senses: senses, using: &generator)
+        let distractors = try pickDistractors(
+            for: tested, of: word, difficulty: item.difficulty, senses: senses, using: &generator
+        )
         var options = [tested.gloss] + distractors
         options.shuffle(using: &generator)
         guard let correctIndex = options.firstIndex(of: tested.gloss) else {
@@ -108,7 +112,7 @@ final class VocabularyProvider: QuestionProvider {
         return Question(
             topic: topic,
             itemID: itemID,
-            difficulty: word.difficulty,
+            difficulty: item.difficulty,
             content: .vocabulary(VocabularyPrompt(
                 word: word.text, partOfSpeech: PartOfSpeech(code: tested.partOfSpeech), meanings: meanings
             )),
@@ -120,7 +124,7 @@ final class VocabularyProvider: QuestionProvider {
     // MARK: Distractors
 
     private func pickDistractors(
-        for tested: Sense, of word: Word, senses: [Sense], using generator: inout SeededGenerator
+        for tested: Sense, of word: Word, difficulty: Int, senses: [Sense], using generator: inout SeededGenerator
     ) throws -> [String] {
         let filter = OverlapFilter(word: word.text, related: word.related, glosses: senses.map(\.gloss))
         var usedGlosses = Set(senses.map { $0.gloss.lowercased() })
@@ -128,7 +132,7 @@ final class VocabularyProvider: QuestionProvider {
         var accepted: [Candidate] = []
 
         for pass in 0..<7 {
-            let pool = candidatePool(partOfSpeech: tested.partOfSpeech, difficulty: word.difficulty, pass: pass)
+            let pool = candidatePool(partOfSpeech: tested.partOfSpeech, difficulty: difficulty, pass: pass)
             let ids = (0..<40).map { _ in Int.random(in: pool, using: &generator) }
             for candidate in try fetchCandidates(senseIDs: ids) {
                 let key = candidate.gloss.lowercased()
@@ -154,8 +158,9 @@ final class VocabularyProvider: QuestionProvider {
         return shortlist.prefix(3).map(\.gloss)
     }
 
-    /// Passes 0–3 draw from the same part of speech within one difficulty level;
-    /// passes 4–5 widen to the whole part of speech; the last pass uses everything.
+    /// Passes 0–3 draw from the same part of speech within one level of the tested
+    /// meaning's difficulty; passes 4–5 widen to the whole part of speech; the last
+    /// pass uses everything.
     private func candidatePool(partOfSpeech: String, difficulty: Int, pass: Int) -> ClosedRange<Int> {
         guard let byDifficulty = senseRanges[partOfSpeech], pass < 6 else { return allSenses }
         let window = pass < 4 ? (difficulty - 1)...(difficulty + 1) : 1...5
@@ -169,19 +174,25 @@ final class VocabularyProvider: QuestionProvider {
 
     // MARK: Queries
 
+    private func fetchItem(id: Int) throws -> Item? {
+        try database.queryFirst(
+            "SELECT i.sense_id, s.word_id, i.difficulty FROM vocab_items i JOIN vocab_senses s ON s.id = i.sense_id WHERE i.id = ?",
+            [.int(id)]
+        ) { Item(senseID: $0.int(0), wordID: $0.int(1), difficulty: $0.int(2)) }
+    }
+
     private func fetchWord(id: Int) throws -> Word? {
         try database.queryFirst(
-            "SELECT id, word, difficulty, related FROM vocab_words WHERE id = ?", [.int(id)]
-        ) { Word(id: $0.int(0), text: $0.string(1), difficulty: $0.int(2), related: Self.split($0.string(3))) }
+            "SELECT id, word, related FROM vocab_words WHERE id = ?", [.int(id)]
+        ) { Word(id: $0.int(0), text: $0.string(1), related: Self.split($0.string(2))) }
     }
 
     private func fetchSenses(wordID: Int) throws -> [Sense] {
         try database.query(
-            "SELECT id, pos, gloss, example, quizzable FROM vocab_senses WHERE word_id = ? ORDER BY sense_order",
+            "SELECT id, pos, gloss, example FROM vocab_senses WHERE word_id = ? ORDER BY sense_order",
             [.int(wordID)]
         ) {
-            Sense(id: $0.int(0), partOfSpeech: $0.string(1), gloss: $0.string(2),
-                  example: $0.optionalString(3), isQuizzable: $0.bool(4))
+            Sense(id: $0.int(0), partOfSpeech: $0.string(1), gloss: $0.string(2), example: $0.optionalString(3))
         }
     }
 

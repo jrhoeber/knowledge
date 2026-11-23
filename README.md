@@ -15,7 +15,7 @@ Available now:
 | Topic | Content |
 | --- | --- |
 | Mental Math | 11,456 unique addition, subtraction, multiplication and division problems across five difficulty levels |
-| Vocabulary | 40,000 words chosen by how widely they are used in books, fiction and current English, each with its common definitions (about 77,000 in total) |
+| Vocabulary | 45,986 questions, one per meaning, on 35,848 words drawn from the 40,000 most used in books, fiction and current English, in American spelling. The 3,000 most common are asked only on their less-known meanings (table: to postpone; bill: a proposed law), and words that only restate a more common one ("unmusical: not musical") are left out. Difficulty comes from how many adults know each meaning |
 
 Sixteen more topics are planned; see [TODO.md](TODO.md).
 
@@ -133,8 +133,9 @@ tools/make_app_icon.py     Renders the app icon
    items, 35% for long-interval reviews). Otherwise a new item at that level is
    chosen. Drawing the level first keeps the mix of levels on target: a run of
    missed hard questions cannot crowd out the easy ones.
-4. **Common words first.** Within a vocabulary level, new words lean toward the most
-   common: half come from the most frequent quarter of the level, and the rarest
+4. **Common meanings first.** Within a vocabulary level, new questions lean toward
+   the meanings a reader meets most often (school and work words count as twice as
+   common): half come from the most frequent quarter of the level, and the rarest
    quarter still supplies about one in eight.
 
 ## How proficiency is scored
@@ -188,10 +189,36 @@ tools/content/.venv/bin/python tools/content/build_content.py
   `tools/content/.cache/google-books/`.
 - `vocabulary.py` selects words and definitions. Its module docstring explains the
   ranking (each word's rank in fiction, in all books and in wordfreq, combined as a
-  weighted geometric mean, with inflections folded into base words), the sense
-  selection (Wiktionary translation counts as a proxy for how common a meaning
-  is), and the filters (obsolete, regional, vulgar and explicit senses are
-  removed; `blocklist.txt` keeps the word list family friendly).
+  weighted geometric mean with fiction weighted least, inflections folded into base
+  words, and school and work words boosted), the sense selection (Wiktionary
+  translation counts as a proxy for how common a meaning is), which meanings become
+  questions, and the filters (obsolete, regional, vulgar and explicit senses are
+  removed, and so are derogatory senses that insult a group of people; plain
+  insults such as "idiot" or "philistine" stay; `blocklist.txt` keeps the word list
+  family friendly). Long definitions are cut at a clause boundary to fit a quiz
+  option rather than dropped. The 3,000 most
+  common words of the 40,000 considered are never asked on their main meaning,
+  only on up to three later meanings that fewer than 98% of adults are estimated
+  to know.
+- `spelling.py` puts the bank in American spelling, using VarCon's list of British
+  and American spellings. British headwords are merged into the American word
+  (plough into plow, jewellery into jewelry, with their frequencies combined), and
+  definitions and examples are respelled ("an achromatic colour" becomes "color").
+  Spellings that are also American (axe, dialogue) stay. The VarCon file is
+  downloaded into `tools/content/.cache/spelling/` the first time the build runs.
+- `derivatives.py` finds meanings that only restate a more common word
+  ("believably: in a believable way", "rootless: having no roots"). They are not
+  asked, and a word with nothing else is left out.
+- `difficulty.py` gives every meaning a difficulty from how many adults know it.
+  Word prevalence (the share of people who know a word) is blended with a
+  prediction from frequency and age of acquisition; a word's later meanings are
+  harder by the years between learning them and its first meaning, from
+  test-based age-of-acquisition norms for 44,000 meanings. Questions are split into
+  five equal levels; in the current build, level 1 meanings are known by at least
+  98.3% of adults, level 2 by 96.3%, level 3 by 91.1%, level 4 by 74.3%, and level
+  5 by fewer.
+- `norms.py` downloads the norms and word lists into `tools/content/.cache/norms/`
+  (about 15 MB) the first time the build runs.
 
 ## Data sources and licenses
 
@@ -203,6 +230,22 @@ tools/content/.venv/bin/python tools/content/build_content.py
   [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).
 - Word frequencies: [wordfreq](https://github.com/rspeer/wordfreq) by Robyn Speer;
   its data is CC BY-SA 4.0.
+- Word knowledge: Brysbaert, Mandera, McCormick & Keuleers (2019),
+  [Word prevalence norms for 62,000 English lemmas](https://doi.org/10.3758/s13428-018-1077-9),
+  Behavior Research Methods (supplementary data).
+- Meaning age of acquisition: Brysbaert & Biemiller (2017),
+  [Test-based age-of-acquisition norms for 44 thousand English word meanings](https://doi.org/10.3758/s13428-016-0811-4),
+  Behavior Research Methods, built on Dale & O'Rourke's *Living Word Vocabulary*.
+  The authors' site has been taken down; the build downloads the file from the
+  Internet Archive.
+- School and work words: the [New Academic Word List and Business Service List](https://www.newgeneralservicelist.com)
+  by Browne, Culligan & Phillips, CC BY-SA 4.0.
+- Spelling variants: [VarCon](http://wordlist.aspell.net/varcon/) by Kevin Atkinson
+  and Benjamin Titze (part of SCOWL), under a permissive license that asks for its
+  copyright notice to be kept (see the README downloaded next to it).
+
+The bank stores only difficulty levels derived from the two sets of norms, not the
+norms themselves. Confirm the terms for both before a public release (see TODO.md).
 
 Because the vocabulary data is derived from CC BY-SA sources, the generated
 `content.sqlite` must be shared under CC BY-SA 4.0 with attribution. An in-app

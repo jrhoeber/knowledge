@@ -63,14 +63,77 @@ struct ContentTests {
 
     // MARK: Vocabulary
 
-    @Test func vocabularyHasFortyThousandWords() throws {
-        #expect(try count("SELECT COUNT(*) FROM vocab_words") == 40_000)
-        #expect(try count("SELECT COUNT(DISTINCT word) FROM vocab_words") == 40_000)
-        #expect(try count(
-            "SELECT COUNT(*) FROM vocab_words w WHERE NOT EXISTS (SELECT 1 FROM vocab_senses s WHERE s.word_id = w.id)"
-        ) == 0)
+    @Test func vocabularyAsksEveryWordByMeaning() throws {
+        let words = try count("SELECT COUNT(*) FROM vocab_words")
+        #expect(words >= 30_000)
+        #expect(try count("SELECT COUNT(DISTINCT word) FROM vocab_words") == words)
+        #expect(try count("SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'vocab_words'") == words)
+        // Every word has at least one quiz item, and items are meanings: more items than words.
+        #expect(try count("""
+            SELECT COUNT(*) FROM vocab_words w WHERE NOT EXISTS
+            (SELECT 1 FROM vocab_items i JOIN vocab_senses s ON s.id = i.sense_id WHERE s.word_id = w.id)
+            """) == 0)
         let provider = try #require(providers[.vocabulary])
-        #expect(provider.totalItemCount == 40_000)
+        #expect(provider.totalItemCount == (try count("SELECT COUNT(*) FROM vocab_items")))
+        #expect(provider.totalItemCount > words)
+    }
+
+    /// The 3,000 most common words are never asked on their main meaning, which nearly
+    /// everyone knows, only on later ones (table: to postpone; bill: a proposed law).
+    @Test func commonWordsAreAskedOnlyOnLaterMeanings() throws {
+        func items(_ condition: String) throws -> Int {
+            try count("""
+                SELECT COUNT(*) FROM vocab_items i JOIN vocab_senses s ON s.id = i.sense_id
+                JOIN vocab_words w ON w.id = s.word_id WHERE \(condition)
+                """)
+        }
+        #expect(try items("w.frequency_rank <= 3000 AND s.sense_order = 0") == 0)
+        #expect(try items("w.frequency_rank <= 3000") > 1_000)
+        #expect(try items("w.word = 'table' AND s.gloss LIKE '%postpone%'") == 1)
+        #expect(try items("w.word = 'bill' AND s.gloss LIKE '%law%'") == 1)
+        #expect(try items("w.word = 'bill' AND s.gloss LIKE '%beak%'") == 0)
+    }
+
+    @Test func meaningsThatRestateAMoreCommonWordAreNotAsked() throws {
+        #expect(try count("SELECT COUNT(*) FROM vocab_words WHERE word IN ('unmusical', 'dreariness', 'shoeless')") == 0)
+    }
+
+    /// Wiktionary keeps some definitions under the British spelling (plough, jewellery)
+    /// and writes others in it ("an achromatic colour"); the bank uses American spelling.
+    @Test func vocabularyUsesAmericanSpelling() throws {
+        let british = "'plough', 'jewellery', 'theatre', 'tyre', 'cheque', 'aluminium', 'labour', 'favourite', 'neighbour', 'defence', 'colour', 'centre', 'grey'"
+        #expect(try count("SELECT COUNT(*) FROM vocab_words WHERE word IN (\(british))") == 0)
+        #expect(try count("SELECT COUNT(*) FROM vocab_words WHERE word IN ('plow', 'jewelry', 'aluminum', 'neighbor', 'favorite')") == 5)
+        for spelling in ["colour", "behaviour", "centre", "travelling", "organisation", "jewellery"] {
+            #expect(try count("""
+                SELECT COUNT(*) FROM vocab_senses WHERE ' ' || lower(gloss) || ' ' || lower(coalesce(example, '')) || ' '
+                GLOB '*[^a-z]\(spelling)[^a-z]*'
+                """) == 0, "\(spelling) in a definition or example")
+        }
+        // Spellings that are also American stay as they are.
+        #expect(try count("SELECT COUNT(*) FROM vocab_words WHERE word IN ('dialogue', 'axe')") == 2)
+    }
+
+    /// Words that used to drop out because of how Wiktionary files them: a definition
+    /// too long for a quiz option (journalism), a page-wide slur category (peaceful), a
+    /// spaced or accented headword (healthcare, cliche), a synonym-only definition
+    /// (mariner), or a derogatory label on an everyday insult (idiot).
+    @Test func wellKnownWordsAreNotLostToDictionaryFormatting() throws {
+        let words = "'journalism', 'cheetah', 'peaceful', 'authoritarianism', 'healthcare', 'cliche', 'mariner', 'idiot', 'superstition', 'center'"
+        #expect(try count("SELECT COUNT(*) FROM vocab_words WHERE word IN (\(words))") == 10)
+        // Insults aimed at a group stay out even though plain insults are in.
+        #expect(try count("SELECT COUNT(*) FROM vocab_words WHERE word IN ('gringo', 'spinster', 'midget', 'hick')") == 0)
+        #expect(try count("SELECT COUNT(*) FROM vocab_senses WHERE length(gloss) > 220") == 0)
+        #expect(try count("SELECT COUNT(*) FROM vocab_senses WHERE gloss LIKE '%, particularly'") == 0)
+    }
+
+    @Test func vocabularyLevelsAreEqualFifths() throws {
+        let provider = try #require(providers[.vocabulary])
+        let total = Double(provider.totalItemCount)
+        for level in 1...5 {
+            let share = Double(provider.itemCount(difficulty: level)) / total
+            #expect(abs(share - 0.2) < 0.005, "level \(level) holds \(share)")
+        }
     }
 
     @Test func newWordsFavorTheMostCommonInTheirLevel() throws {
@@ -88,10 +151,29 @@ struct ContentTests {
         #expect(CommonFirstSampler.item(in: 10...19, unit: 0.999_999) == 19)
     }
 
-    @Test func commonWordsAreEasierThanRareOnes() throws {
-        let easy = try count("SELECT MAX(frequency_rank) FROM vocab_words WHERE difficulty = 1")
-        let hard = try count("SELECT MIN(frequency_rank) FROM vocab_words WHERE difficulty = 5")
-        #expect(easy < hard)
+    /// Difficulty follows how widely a meaning is known, not how common the word is:
+    /// "photosynthesis" is rarer than "panacea" in print but far better known.
+    @Test func difficultyFollowsHowWidelyAMeaningIsKnown() throws {
+        func easiestLevel(_ word: String) throws -> Int {
+            try count("""
+                SELECT MIN(i.difficulty) FROM vocab_items i JOIN vocab_senses s ON s.id = i.sense_id
+                JOIN vocab_words w ON w.id = s.word_id WHERE w.word = '\(word)'
+                """)
+        }
+        func rank(_ word: String) throws -> Int {
+            try count("SELECT frequency_rank FROM vocab_words WHERE word = '\(word)'")
+        }
+        #expect(try rank("photosynthesis") > rank("panacea"))
+        #expect(try easiestLevel("photosynthesis") < easiestLevel("panacea"))
+        #expect(try easiestLevel("denominator") < easiestLevel("lugubrious"))
+        #expect(try easiestLevel("lugubrious") == 5)
+    }
+
+    @Test func aWordsMeaningsCanSitAtDifferentLevels() throws {
+        #expect(try count("""
+            SELECT COUNT(*) FROM (SELECT s.word_id FROM vocab_items i JOIN vocab_senses s ON s.id = i.sense_id
+            GROUP BY s.word_id HAVING COUNT(DISTINCT i.difficulty) > 1)
+            """) > 1_000)
     }
 
     @Test("Vocabulary questions show one correct definition and three from other words", arguments: 1...5)
@@ -100,14 +182,22 @@ struct ContentTests {
         let range = try #require(provider.itemRanges(difficulty: level).first)
         var generator = SeededGenerator(seed: UInt64(level * 1_000))
         for _ in 0..<150 {
-            let question = try provider.makeQuestion(itemID: Int.random(in: range, using: &generator), using: &generator)
+            let itemID = Int.random(in: range, using: &generator)
+            let question = try provider.makeQuestion(itemID: itemID, using: &generator)
             guard case .vocabulary(let prompt) = question.content else {
                 Issue.record("Expected a vocabulary prompt")
                 continue
             }
             let definitions = Set(prompt.meanings.map(\.definition))
+            #expect(question.difficulty == level)
             #expect(question.options.count == 4)
             #expect(Set(question.options).count == 4)
+            // The correct option is the item's own meaning.
+            let tested = try #require(try content.database.queryFirst(
+                "SELECT s.gloss FROM vocab_items i JOIN vocab_senses s ON s.id = i.sense_id WHERE i.id = ?",
+                [.int(itemID)]
+            ) { $0.string(0) })
+            #expect(question.correctAnswer == tested)
             #expect(definitions.contains(question.correctAnswer))
             let wrong = question.options.enumerated().filter { $0.offset != question.correctIndex }.map(\.element)
             #expect(wrong.allSatisfy { !definitions.contains($0) }, "\(prompt.word): \(wrong)")

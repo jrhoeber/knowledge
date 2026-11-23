@@ -114,6 +114,22 @@ wank
 wanker
 whore
 
+# Derogatory words are allowed unless they target a group or are sexual (see
+# GROUP_INSULT_RE in vocabulary.py). These slip past that rule: slurs whose
+# definition does not name the group, and sexual slang.
+ars
+boyo
+chucky
+cholo
+cuck
+limey
+masturbatory
+midget
+perv
+pothead
+slant-eyed
+thot
+
 # Spellings whose counts mostly measure something other than the English word
 # they define, so their rank is far too high: foreign function words quoted in
 # English text (der, le, und), pieces of words split by hyphens, line breaks or

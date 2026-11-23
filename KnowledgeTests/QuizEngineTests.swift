@@ -42,27 +42,37 @@ struct QuizEngineTests {
         #expect((18...22).contains(counts[.vocabulary, default: 0]))
     }
 
-    @Test("A missed question comes back within the session", arguments: [5, 6, 7, 8])
-    func missedQuestionReturns(seed: UInt64) throws {
-        let (engine, _) = try makeEngine(topics: [.mentalMath, .vocabulary], seed: seed)
-        engine.start()
-        let missed = try #require(engine.question)
-        engine.select((missed.correctIndex + 1) % 4)
-        #expect(engine.outcome?.isCorrect == false)
-        engine.advance()
-
-        var returnedAfter: Int?
-        for index in 1...25 {
-            let question = try #require(engine.question)
-            if question.topic == missed.topic, question.itemID == missed.itemID {
-                returnedAfter = index
-                break
-            }
-            engine.select(question.correctIndex)
+    /// A missed item is due 5–9 answers later, but it is only asked when its level is
+    /// drawn (see `strugglingAfterAStrongStartBringsBackEasyLevels`), so the wait varies.
+    /// Across many sessions it nearly always returns within 25 questions and always
+    /// within 60.
+    @Test("A missed question comes back within the session")
+    func missedQuestionReturns() throws {
+        var gaps: [Int] = []
+        for seed in UInt64(1)...20 {
+            let (engine, _) = try makeEngine(topics: [.mentalMath, .vocabulary], seed: seed)
+            engine.start()
+            let missed = try #require(engine.question)
+            engine.select((missed.correctIndex + 1) % 4)
+            #expect(engine.outcome?.isCorrect == false)
             engine.advance()
+
+            var returnedAfter: Int?
+            for index in 1...60 {
+                let question = try #require(engine.question)
+                if question.topic == missed.topic, question.itemID == missed.itemID {
+                    returnedAfter = index
+                    break
+                }
+                engine.select(question.correctIndex)
+                engine.advance()
+            }
+            let gap = try #require(returnedAfter, "Seed \(seed): missed item did not return within 60 questions")
+            #expect(gap >= SpacedRepetition.relearnGap.lowerBound)
+            gaps.append(gap)
         }
-        let gap = try #require(returnedAfter, "Missed item did not return within 25 questions")
-        #expect(gap >= SpacedRepetition.relearnGap.lowerBound)
+        let soon = gaps.filter { $0 <= 25 }.count
+        #expect(soon >= 15, "Returned within 25 questions in \(soon) of 20 sessions: \(gaps)")
     }
 
     @Test func correctAnswersAreNotRepeatedSoon() throws {
