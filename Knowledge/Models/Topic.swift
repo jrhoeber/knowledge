@@ -27,7 +27,7 @@ nonisolated enum Topic: String, CaseIterable, Identifiable, Codable, Sendable {
     /// Topics with question content shipped in the app bundle.
     var isAvailable: Bool {
         switch self {
-        case .mentalMath, .vocabulary: true
+        case .mentalMath, .geography, .vocabulary: true
         default: false
         }
     }
@@ -76,7 +76,7 @@ nonisolated enum Topic: String, CaseIterable, Identifiable, Codable, Sendable {
     var summary: String {
         switch self {
         case .mentalMath: "Addition, subtraction, multiplication and division"
-        case .geography: "Countries by map and by flag"
+        case .geography: "Maps, flags and capitals"
         case .vocabulary: "Word meanings, from everyday to rare"
         case .spelling: "Hear a word, then spell it"
         case .history: "Important events and key figures"

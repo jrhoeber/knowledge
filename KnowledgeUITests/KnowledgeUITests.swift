@@ -121,6 +121,53 @@ final class KnowledgeUITests: XCTestCase {
         XCTAssertTrue(sawLongCard, "No word with three or more meanings in 20 questions")
     }
 
+    /// Geography mixes maps (with a zoom control), flags and capitals.
+    @MainActor
+    func testGeographyMapsFlagsAndCapitals() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-resetState", "-topics", "geography", "-seed", "4", "-disableAnimations"]
+        app.launch()
+        XCTAssertTrue(prompt(in: app).waitForExistence(timeout: 10))
+
+        // Answer A every time; that is right about a quarter of the time, so both
+        // kinds of feedback come up.
+        var seen: Set<String> = []
+        var missed: Set<String> = []
+        for _ in 0..<40 where seen.count < 3 || !missed.isSuperset(of: ["map", "flag"]) {
+            XCTAssertTrue(app.buttons["option-0"].waitForExistence(timeout: 5))
+            let map = app.descendants(matching: .any)["mapView"]
+            let flag = app.descendants(matching: .any)["flagImage"]
+            let kind = map.exists ? "map" : flag.exists ? "flag" : app.staticTexts["What is the capital of"].exists ? "capital" : "other"
+            let firstOfKind = !seen.contains(kind)
+            if firstOfKind {
+                attachScreenshot(app, named: "20-geography-\(kind)")
+            }
+            if kind == "map" && firstOfKind {
+                let zoom = app.segmentedControls["mapZoomPicker"]
+                XCTAssertTrue(zoom.exists)
+                zoom.buttons["Zoomed out"].tap()
+                RunLoop.current.run(until: Date().addingTimeInterval(1))
+                attachScreenshot(app, named: "21-geography-map-zoomed-out")
+                zoom.buttons["Close-up"].tap()
+                RunLoop.current.run(until: Date().addingTimeInterval(1))
+            }
+            app.buttons["option-0"].tap()
+            XCTAssertTrue(app.buttons["continueButton"].waitForExistence(timeout: 5))
+            let isWrong = app.staticTexts["Not quite"].exists
+            if kind == "flag" && isWrong {
+                XCTAssertTrue(app.descendants(matching: .any)["flagComparisonCard"].waitForExistence(timeout: 3))
+            }
+            if firstOfKind || (isWrong && !missed.contains(kind)) {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+                attachScreenshot(app, named: "22-geography-\(kind)-\(isWrong ? "missed" : "feedback")")
+            }
+            seen.insert(kind)
+            if isWrong { missed.insert(kind) }
+            app.buttons["continueButton"].tap()
+        }
+        XCTAssertEqual(seen, ["map", "flag", "capital"])
+    }
+
     // MARK: Helpers
 
     @MainActor

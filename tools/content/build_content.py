@@ -7,10 +7,12 @@ Usage (from the repository root):
     curl -L -o tools/content/.cache/kaikki-english.jsonl \\
         https://kaikki.org/dictionary/English/kaikki.org-dictionary-English.jsonl
     tools/content/.venv/bin/python -I tools/content/google_books.py   # streams ~18 GB once
-    tools/content/.venv/bin/python tools/content/build_content.py   # also downloads the norms and VarCon
+    tools/content/.venv/bin/python tools/content/build_content.py   # also downloads the norms, VarCon,
+                                                                    # Natural Earth, flags and pageviews
+    tools/content/.venv/bin/python tools/content/build_content.py --reuse   # reuse the cached Wiktionary parse
 
 The output is deterministic for a given Wiktionary extract, Google Books reduction,
-wordfreq version and set of norms.
+wordfreq version, set of norms and geography cache (`.cache/geography/`).
 
 Schema (version `SCHEMA_VERSION`, stored in PRAGMA user_version; the app checks it
 against `ContentStore.schemaVersion`):
@@ -29,11 +31,22 @@ against `ContentStore.schemaVersion`):
     vocab_items     the quiz items: one meaning (sense) each. IDs are contiguous per
                     difficulty and, within a level, ordered from the most to the
                     least often met, so the app can lean toward the front.
+    geo_regions     every country, territory and US state drawn on maps, with its
+                    label point, close-up and zoomed-out frames, and for quiz places
+                    the capital and notes (see geography.py).
+    geo_shapes      each region's outline at two levels of detail (geography.encode_shape).
+    geo_flags       flag images (WebP) of the quiz countries, with source and license.
+    geo_related     per quiz place, its nearest places ('neighbor') and, for countries,
+                    the most similar flags ('lookalike'), ranked.
+    geo_decoys      famous non-capital cities used as tempting wrong capitals.
+    geo_items       the geography quiz items. IDs are contiguous per (difficulty,
+                    category); the categories are map, flag and capital.
     meta            build information.
 """
 
 from __future__ import annotations
 
+import pickle
 import random
 import sqlite3
 import sys
@@ -42,10 +55,11 @@ from importlib.metadata import version
 from pathlib import Path
 
 import difficulty
+import geography
 import mental_math
 import vocabulary
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 OUTPUT = ROOT / "Knowledge" / "Resources" / "content.sqlite"
@@ -55,6 +69,7 @@ GOOGLE_BOOKS = {
     "books": HERE / ".cache" / "google-books" / "eng.tsv",
 }
 BLOCKLIST = HERE / "blocklist.txt"
+PREPARED = HERE / ".cache" / f"vocabulary-prepared-v{vocabulary.PREPARED_VERSION}.pickle"
 SHUFFLE_SEED = 4242
 
 SCHEMA = """
@@ -92,6 +107,63 @@ CREATE TABLE vocab_items (
     sense_id INTEGER NOT NULL UNIQUE REFERENCES vocab_senses(id),
     difficulty INTEGER NOT NULL
 );
+CREATE TABLE geo_regions (
+    id INTEGER PRIMARY KEY,
+    layer TEXT NOT NULL,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL,
+    continent TEXT NOT NULL,
+    subregion TEXT NOT NULL,
+    area_name TEXT NOT NULL,
+    area_km2 REAL NOT NULL,
+    quizzable INTEGER NOT NULL,
+    label_lon REAL NOT NULL,
+    label_lat REAL NOT NULL,
+    frame_lon REAL NOT NULL,
+    frame_lat REAL NOT NULL,
+    frame_x REAL NOT NULL,
+    frame_y REAL NOT NULL,
+    frame_min REAL NOT NULL,
+    context_lon REAL NOT NULL,
+    context_lat REAL NOT NULL,
+    context_x REAL NOT NULL,
+    context_y REAL NOT NULL,
+    capital TEXT,
+    capital_note TEXT,
+    flag_note TEXT,
+    UNIQUE (layer, code)
+);
+CREATE TABLE geo_shapes (
+    region_id INTEGER PRIMARY KEY REFERENCES geo_regions(id),
+    fine BLOB NOT NULL,
+    coarse BLOB NOT NULL
+);
+CREATE TABLE geo_flags (
+    region_id INTEGER PRIMARY KEY REFERENCES geo_regions(id),
+    image BLOB NOT NULL,
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    license TEXT NOT NULL
+);
+CREATE TABLE geo_related (
+    region_id INTEGER NOT NULL REFERENCES geo_regions(id),
+    relation TEXT NOT NULL,
+    rank INTEGER NOT NULL,
+    other_id INTEGER NOT NULL REFERENCES geo_regions(id),
+    PRIMARY KEY (region_id, relation, rank)
+);
+CREATE TABLE geo_decoys (
+    region_id INTEGER NOT NULL REFERENCES geo_regions(id),
+    city TEXT NOT NULL
+);
+CREATE TABLE geo_items (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,
+    category TEXT NOT NULL,
+    region_id INTEGER NOT NULL REFERENCES geo_regions(id),
+    difficulty INTEGER NOT NULL
+);
 """
 
 
@@ -113,8 +185,22 @@ def write_math(db: sqlite3.Connection, rng: random.Random) -> int:
     return len(questions)
 
 
+class _PreparedUnpickler(pickle.Unpickler):
+    """`vocabulary.py --reuse` pickles from `__main__`; its classes live in `vocabulary`."""
+
+    def find_class(self, module: str, name: str):
+        return super().find_class("vocabulary" if module == "__main__" else module, name)
+
+
 def write_vocabulary(db: sqlite3.Connection, rng: random.Random) -> vocabulary.Bank:
-    bank = vocabulary.build(WIKTIONARY, BLOCKLIST, GOOGLE_BOOKS)
+    # --reuse keeps the parsed Wiktionary candidates between runs, like vocabulary.py.
+    if "--reuse" in sys.argv and PREPARED.exists():
+        with PREPARED.open("rb") as handle:
+            prepared = _PreparedUnpickler(handle).load()
+    else:
+        prepared = vocabulary.prepare(WIKTIONARY, BLOCKLIST)
+        PREPARED.write_bytes(pickle.dumps(prepared))
+    bank = vocabulary.rank(prepared, GOOGLE_BOOKS)
     senses = []
     for word_id, word in enumerate(bank.words, start=1):
         db.execute(
@@ -140,6 +226,37 @@ def write_vocabulary(db: sqlite3.Connection, rng: random.Random) -> vocabulary.B
     return bank
 
 
+def write_geography(db: sqlite3.Connection) -> geography.Atlas:
+    atlas = geography.build()
+    ids = {id(region): number for number, region in enumerate(atlas.regions, start=1)}
+    for region in atlas.regions:
+        place = region.place
+        db.execute(
+            "INSERT INTO geo_regions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (ids[id(region)], region.layer, region.code, region.name, region.continent, region.subregion,
+             region.area_name, round(region.area_km2, 3), int(place is not None), *region.label, *region.frame,
+             region.frame_min, *region.context, place.capital if place else None,
+             place.capital_note if place else None, place.flag_note if place else None),
+        )
+        db.execute("INSERT INTO geo_shapes VALUES (?, ?, ?)",
+                   (ids[id(region)], geography.encode_shape(region.fine), geography.encode_shape(region.coarse)))
+        if region.flag:
+            db.execute("INSERT INTO geo_flags VALUES (?, ?, ?, ?, ?, ?)",
+                       (ids[id(region)], region.flag, *region.flag_size, place.flag_file, region.flag_license))
+        for relation, others in (("neighbor", region.neighbors), ("lookalike", region.lookalikes)):
+            db.executemany("INSERT INTO geo_related VALUES (?, ?, ?, ?)",
+                           [(ids[id(region)], relation, rank, ids[id(other)]) for rank, other in enumerate(others)])
+        if place:
+            db.executemany("INSERT INTO geo_decoys VALUES (?, ?)", [(ids[id(region)], city) for city in place.decoys])
+    items = sorted(atlas.items, key=lambda i: (i.difficulty, geography.ITEM_KINDS[i.kind], i.kind, -i.score, i.region.code))
+    db.executemany(
+        "INSERT INTO geo_items VALUES (?, ?, ?, ?, ?)",
+        [(number, item.kind, geography.ITEM_KINDS[item.kind], ids[id(item.region)], item.difficulty)
+         for number, item in enumerate(items, start=1)],
+    )
+    return atlas
+
+
 def validate(db: sqlite3.Connection) -> None:
     def contiguous(table: str, group: str) -> None:
         for row in db.execute(f"SELECT {group}, MIN(id), MAX(id), COUNT(*) FROM {table} GROUP BY {group}"):
@@ -149,6 +266,7 @@ def validate(db: sqlite3.Connection) -> None:
     contiguous("math_questions", "difficulty, operation")
     contiguous("vocab_senses", "pos, difficulty")
     contiguous("vocab_items", "difficulty")
+    contiguous("geo_items", "difficulty, category")
 
     math_count = db.execute("SELECT COUNT(*) FROM math_questions").fetchone()[0]
     unique = db.execute("SELECT COUNT(*) FROM (SELECT DISTINCT operation, lhs, rhs FROM math_questions)").fetchone()[0]
@@ -179,6 +297,34 @@ def validate(db: sqlite3.Connection) -> None:
     levels = db.execute("SELECT COUNT(DISTINCT difficulty) FROM vocab_items").fetchone()[0]
     assert levels == 5, levels
 
+    # Geography: every kind is split into five equal levels, every quiz place has a
+    # shape, every country a flag, and no capital question gives itself away.
+    for kind, sizes in db.execute(
+        "SELECT kind, group_concat(n) FROM (SELECT kind, difficulty, COUNT(*) n FROM geo_items "
+        "GROUP BY kind, difficulty) GROUP BY kind"
+    ):
+        counts = [int(n) for n in sizes.split(",")]
+        assert len(counts) == 5 and max(counts) - min(counts) <= 1, (kind, counts)
+    expected = {"country_map": 196, "country_flag": 196, "state_map": 50}
+    for kind, count in expected.items():
+        found = db.execute("SELECT COUNT(*) FROM geo_items WHERE kind = ?", (kind,)).fetchone()[0]
+        assert found == count, (kind, found)
+    unshaped = db.execute(
+        "SELECT COUNT(*) FROM geo_regions r LEFT JOIN geo_shapes s ON s.region_id = r.id "
+        "WHERE s.region_id IS NULL OR length(s.fine) < 32 OR length(s.coarse) < 32"  # one ring of 3 points
+    ).fetchone()[0]
+    assert unshaped == 0, unshaped
+    flagless = db.execute(
+        "SELECT COUNT(*) FROM geo_regions r LEFT JOIN geo_flags f ON f.region_id = r.id "
+        "WHERE r.layer = 'world' AND r.quizzable = 1 AND f.region_id IS NULL"
+    ).fetchone()[0]
+    assert flagless == 0, flagless
+    for name, capital in db.execute(
+        "SELECT r.name, r.capital FROM geo_items i JOIN geo_regions r ON r.id = i.region_id "
+        "WHERE i.category = 'capital'"
+    ):
+        assert capital and capital.casefold() not in name.casefold() and name.casefold() not in capital.casefold(), name
+
 
 def main() -> None:
     if not WIKTIONARY.exists():
@@ -196,6 +342,7 @@ def main() -> None:
     with db:
         math_count = write_math(db, rng)
         bank = write_vocabulary(db, rng)
+        atlas = write_geography(db)
         model = bank.model
         sense_count = db.execute("SELECT COUNT(*) FROM vocab_senses").fetchone()[0]
         meta = {
@@ -231,6 +378,15 @@ def main() -> None:
                 f"ease ~ {model.rank_only[0]:.3f} + {model.rank_only[1]:.3f} ln(rank); "
                 f"{model.age_slope:.3f} per year of meaning age; later meanings {model.secondary_gap:.2f} years"
             ),
+            "geo_items": ", ".join(f"{kind} {count}" for kind, count in atlas.counts.items()),
+            "geo_sources": (
+                "Natural Earth 1:10m admin 0 (United States point of view) and admin 1, and lakes (public domain); "
+                "flags from Wikimedia Commons (public domain, Oman's under the Open Government Licence - Oman 1.0)"
+            ),
+            "geo_difficulty": (
+                f"English Wikipedia pageviews {geography.pageview_window()}, "
+                "area for maps, distance to the nearest lookalike for flags"
+            ),
         }
         db.executemany("INSERT INTO meta VALUES (?, ?)", sorted(meta.items()))
     validate(db)
@@ -247,6 +403,7 @@ def main() -> None:
     print("  vocabulary: " + ", ".join(f"{k} {v}" for k, v in bank.counts.items()) + f", definitions {sense_count}")
     print(f"  items per difficulty: {dict(sorted(difficulties.items()))}")
     print("  level cuts (share who know): " + ", ".join(f"{difficulty.share_of_ease(c):.1%}" for c in bank.cuts))
+    print("  geography: " + ", ".join(f"{kind} {count}" for kind, count in atlas.counts.items()))
 
 
 if __name__ == "__main__":

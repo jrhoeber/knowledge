@@ -2,14 +2,11 @@
 
 ## Topics to implement
 
-Mental Math and Vocabulary ship today. Each topic below already exists in
+Mental Math, Geography and Vocabulary ship today. Each topic below already exists in
 `Topic` (title, summary, symbol, color) and appears as "coming soon"; turning one on
 means adding content, a `QuestionProvider`, and flipping `Topic.isAvailable`
 (see "Adding a topic" in CLAUDE.md).
 
-- [ ] **Geography**: name the country from its map outline or its flag. Needs
-      image assets (flag and outline artwork with a compatible license) and an
-      image-based prompt.
 - [ ] **Spelling**: the word is spoken and the user types it. Needs text-to-speech
       (`AVSpeechSynthesizer`) and a text field with autocorrection, spell checking
       and suggestions disabled. Not multiple choice. Can reuse the Vocabulary word

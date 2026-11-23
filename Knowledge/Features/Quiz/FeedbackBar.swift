@@ -59,6 +59,12 @@ struct FeedbackBar: View {
             return count > 1
                 ? "\(prompt.word) has \(count) common meanings, listed below."
                 : "The full definition is below."
+        case .map(let prompt):
+            return "This is \(prompt.target.name), in \(prompt.target.areaName)."
+        case .flag(let prompt):
+            return "This is the flag of \(prompt.countryName)."
+        case .capital(let prompt):
+            return "\(prompt.capital) is the capital of \(prompt.placeName)."
         }
     }
 }

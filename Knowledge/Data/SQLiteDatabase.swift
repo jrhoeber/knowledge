@@ -171,6 +171,11 @@ nonisolated struct SQLiteRow {
         isNull(column) ? nil : string(column)
     }
 
+    func data(_ column: Int32) -> Data {
+        guard let bytes = sqlite3_column_blob(statement, column) else { return Data() }
+        return Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, column)))
+    }
+
     func isNull(_ column: Int32) -> Bool {
         sqlite3_column_type(statement, column) == SQLITE_NULL
     }

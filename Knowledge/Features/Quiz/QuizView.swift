@@ -53,8 +53,8 @@ struct QuizView: View {
     }
 }
 
-/// One question: header, prompt and options, plus the full answer set for
-/// vocabulary once answered.
+/// One question: header, prompt and options, plus what to learn from the answer
+/// (every meaning of a vocabulary word, a flag comparison, a note on a capital).
 private struct QuestionView: View {
     let question: Question
     let outcome: QuizEngine.Outcome?
@@ -64,8 +64,8 @@ private struct QuestionView: View {
         ScrollViewReader { proxy in
             content
                 .task(id: outcome != nil) {
-                    guard outcome != nil, case .vocabulary = question.content else { return }
-                    // Bring the full answer set into view above the feedback bar. Wait a
+                    guard outcome != nil, hasAnswerCard else { return }
+                    // Bring the answer card into view above the feedback bar. Wait a
                     // beat so the card and the bar's inset are laid out (and the answer
                     // highlight registers) before scrolling. Anchoring the card's top
                     // clamps to the end for short cards and keeps the first meaning
@@ -73,13 +73,49 @@ private struct QuestionView: View {
                     try? await Task.sleep(for: .milliseconds(250))
                     guard !Task.isCancelled else { return }
                     withAnimation(.easeInOut(duration: 0.35)) {
-                        proxy.scrollTo(Self.meaningsID, anchor: .top)
+                        proxy.scrollTo(Self.answerCardID, anchor: .top)
                     }
                 }
         }
     }
 
-    private static let meaningsID = "meanings"
+    private static let answerCardID = "answerCard"
+
+    private var hasAnswerCard: Bool {
+        switch question.content {
+        case .vocabulary: true
+        case .flag(let prompt): outcome?.isCorrect == false || prompt.note != nil
+        case .capital(let prompt): prompt.note != nil
+        case .math, .map: false
+        }
+    }
+
+    @ViewBuilder private var answerCard: some View {
+        if let outcome {
+            switch question.content {
+            case .vocabulary(let prompt):
+                MeaningsCard(prompt: prompt, topic: question.topic)
+            case .flag(let prompt):
+                VStack(spacing: Spacing.m) {
+                    if !outcome.isCorrect {
+                        FlagComparisonCard(
+                            prompt: prompt, chosenIndex: outcome.selectedIndex,
+                            chosenName: question.options[outcome.selectedIndex]
+                        )
+                    }
+                    if let note = prompt.note {
+                        GeographyNoteCard(title: "About this flag", text: note)
+                    }
+                }
+            case .capital(let prompt):
+                if let note = prompt.note {
+                    GeographyNoteCard(title: "About \(prompt.capital)", text: note)
+                }
+            case .math, .map:
+                EmptyView()
+            }
+        }
+    }
 
     private var content: some View {
         ScrollView {
@@ -89,11 +125,11 @@ private struct QuestionView: View {
                     Spacer()
                     DifficultyMeter(level: question.difficulty, tint: question.topic.colors.accent)
                 }
-                PromptCard(question: question)
+                PromptCard(question: question, outcome: outcome)
                 OptionsView(question: question, outcome: outcome, onSelect: onSelect)
-                if outcome != nil, case .vocabulary(let prompt) = question.content {
-                    MeaningsCard(prompt: prompt, topic: question.topic)
-                        .id(Self.meaningsID)
+                if outcome != nil, hasAnswerCard {
+                    answerCard
+                        .id(Self.answerCardID)
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
             }
@@ -106,8 +142,29 @@ private struct QuestionView: View {
     }
 }
 
-/// The question itself on a block of the topic's color.
+/// The question itself: maps and flags on a white card, text prompts on a block of
+/// the topic's color.
 private struct PromptCard: View {
+    let question: Question
+    let outcome: QuizEngine.Outcome?
+
+    var body: some View {
+        Group {
+            switch question.content {
+            case .map(let prompt):
+                MapPromptCard(prompt: prompt, outcome: outcome)
+            case .flag(let prompt):
+                FlagPromptCard(prompt: prompt)
+            case .math, .vocabulary, .capital:
+                TextPromptCard(question: question)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("questionPrompt")
+    }
+}
+
+private struct TextPromptCard: View {
     let question: Question
     @ScaledMetric(relativeTo: .largeTitle) private var expressionSize: CGFloat = 54
     @ScaledMetric(relativeTo: .largeTitle) private var wordSize: CGFloat = 42
@@ -115,6 +172,21 @@ private struct PromptCard: View {
     var body: some View {
         VStack(spacing: Spacing.m) {
             switch question.content {
+            case .map, .flag:
+                EmptyView()
+            case .capital(let prompt):
+                Text("What is the capital of")
+                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.85))
+                Text(prompt.placeName)
+                    .font(.system(size: wordSize, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .minimumScaleFactor(0.5)
+                    .lineLimit(2)
+                Text(prompt.isState ? "U.S. state" : "country")
+                    .font(.system(.callout, design: .rounded).italic())
+                    .foregroundStyle(.white.opacity(0.9))
             case .math(let prompt):
                 Text("Solve")
                     .font(.system(.subheadline, design: .rounded, weight: .semibold))
@@ -148,7 +220,6 @@ private struct PromptCard: View {
                 .fill(question.topic.colors.accent)
         )
         .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("questionPrompt")
     }
 }
 
@@ -166,7 +237,7 @@ private struct OptionsView: View {
                     option(index, layout: .tile)
                 }
             }
-        case .vocabulary:
+        case .vocabulary, .map, .flag, .capital:
             VStack(spacing: Spacing.m) {
                 ForEach(question.options.indices, id: \.self) { index in
                     option(index, layout: .row)

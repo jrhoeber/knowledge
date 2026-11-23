@@ -19,7 +19,7 @@ final class ContentStore {
     }
 
     /// Bump together with `SCHEMA_VERSION` in `tools/content/build_content.py`.
-    static let schemaVersion = 2
+    static let schemaVersion = 3
 
     let database: SQLiteDatabase
 
@@ -41,6 +41,7 @@ final class ContentStore {
     func makeProviders() throws -> [Topic: any QuestionProvider] {
         [
             .mentalMath: try MentalMathProvider(database: database),
+            .geography: try GeographyProvider(database: database),
             .vocabulary: try VocabularyProvider(database: database),
         ]
     }
