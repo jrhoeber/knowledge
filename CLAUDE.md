@@ -24,8 +24,8 @@ xcrun xcresulttool export attachments --path build/ui.xcresult --output-path bui
 
 # Regenerate the question bank (needs the 3.4 GB Wiktionary extract; see README)
 tools/content/.venv/bin/python -I tools/content/google_books.py   # once: Google Books shares (~18 GB streamed)
-tools/content/.venv/bin/python tools/content/build_content.py
-tools/content/.venv/bin/python tools/content/vocabulary.py --reuse   # ranking diagnostics, cached parse
+tools/content/.venv/bin/python tools/content/build_content.py       # downloads the norms (norms.py) on first run
+tools/content/.venv/bin/python tools/content/vocabulary.py --reuse   # ranking and difficulty diagnostics, cached parse
 ```
 
 ## Architecture
@@ -39,10 +39,17 @@ tools/content/.venv/bin/python tools/content/vocabulary.py --reuse   # ranking d
   `strugglingAfterAStrongStartBringsBackEasyLevels`). It is `@Observable` and owned
   by `App/AppModel`.
 - `QuestionProvider` turns a content item ID into a `Question`. One provider per
-  topic: `MentalMathProvider`, `VocabularyProvider` (builds distractors at
-  runtime, rejecting synonyms and definitions sharing word stems via `OverlapFilter`).
+  topic: `MentalMathProvider`, `VocabularyProvider` (a vocabulary item is one
+  meaning of a word, from `vocab_items`; builds distractors at runtime, rejecting
+  synonyms and definitions sharing word stems via `OverlapFilter`).
   `randomItem(in:)` picks a new item within a level: uniform by default; vocabulary
-  leans toward low IDs (common words) through `CommonFirstSampler`.
+  leans toward low IDs (the meanings met most often) through `CommonFirstSampler`.
+- Vocabulary difficulty is how widely a meaning is known, not word frequency:
+  `tools/content/difficulty.py` (word prevalence and meaning age-of-acquisition
+  norms from `norms.py`), split into five equal levels. `derivatives.py` drops
+  meanings that only restate a more common word. `spelling.py` (VarCon) puts the
+  bank in American spelling: British headwords merge into the American word and
+  definitions, examples and related words are respelled.
 - `Data/ContentStore` opens the bundled read-only `Resources/content.sqlite`;
   `Data/ProgressStore` is the writable SQLite file in Application Support;
   `Data/SettingsStore` wraps `UserDefaults`. `Data/SQLiteDatabase` is a thin
@@ -53,16 +60,26 @@ tools/content/.venv/bin/python tools/content/vocabulary.py --reuse   # ranking d
 ## Invariants
 
 - Content item IDs are contiguous per (difficulty, operation) for math, per
-  difficulty for words (`id == frequency_rank`), and per (pos, difficulty) for
-  vocabulary senses. Providers sample by ID range and throw
-  `nonContiguousRange` if this breaks. `build_content.py` validates it.
+  difficulty for vocabulary items (`vocab_items`, ordered within a level by how
+  often the meaning is met), and per (pos, difficulty) for vocabulary senses.
+  Providers sample by ID range and throw `nonContiguousRange` if this breaks.
+  `build_content.py` validates it.
 - `SCHEMA_VERSION` in `tools/content/build_content.py` must equal
   `ContentStore.schemaVersion`; bump both on any content schema change.
 - `GlossTokenizer.stem` in Swift and `stem()` in `tools/content/vocabulary.py`
   are ports of each other; change them together.
 - Unit tests assert the brief's numbers: at least 10,000 unique math questions,
-  exactly 40,000 vocabulary words (`WORD_COUNT`; the brief originally said 75,000),
-  4 unique options with one correct answer.
+  4 unique options with one correct answer. Vocabulary is drawn from the 40,000
+  most common words (`WORD_POOL`; the brief originally said 75,000), minus
+  transparent derivatives; the 3,000 most common (`REMOVED_COMMON_WORDS`) are asked
+  only on later meanings, never their main one (listed first, `sense_order` 0).
+  About 35,800 words; tests require at least 30,000 and equal-sized levels.
+- The bank is in American spelling (headwords, definitions, examples);
+  `vocabulary.rank` fails the build if a non-American headword slips in. Derogatory
+  meanings are allowed only if they don't insult a group (`GROUP_INSULT_RE`); review
+  newly added derogatory words, and extend `blocklist.txt`, when the filters change.
+- `vocabulary.py --reuse` caches the parse under `PREPARED_VERSION`; bump it when
+  `prepare` changes.
 
 ## Conventions
 

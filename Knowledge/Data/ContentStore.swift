@@ -19,7 +19,7 @@ final class ContentStore {
     }
 
     /// Bump together with `SCHEMA_VERSION` in `tools/content/build_content.py`.
-    static let schemaVersion = 1
+    static let schemaVersion = 2
 
     let database: SQLiteDatabase
 
