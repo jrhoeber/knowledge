@@ -17,7 +17,56 @@ nonisolated struct Question: Identifiable, Equatable, Sendable {
     enum Content: Equatable, Sendable {
         case math(MathPrompt)
         case vocabulary(VocabularyPrompt)
+        case map(MapPrompt)
+        case flag(FlagPrompt)
+        case capital(CapitalPrompt)
     }
+}
+
+/// Name the country or state highlighted on a map.
+nonisolated struct MapPrompt: Equatable, Sendable {
+    let atlas: GeoAtlas
+    let layer: GeoLayer
+    let target: GeoRegion
+    /// The region each option names, in option order, so a wrong pick can be shown.
+    let optionRegionIDs: [Int]
+
+    var question: String {
+        layer == .states ? "Which state is highlighted?" : "Which country is highlighted?"
+    }
+
+    static func == (lhs: MapPrompt, rhs: MapPrompt) -> Bool {
+        lhs.atlas === rhs.atlas && lhs.layer == rhs.layer && lhs.target == rhs.target
+            && lhs.optionRegionIDs == rhs.optionRegionIDs
+    }
+}
+
+/// A flag image at its true proportions (encoded as WebP).
+nonisolated struct FlagImage: Equatable, Sendable {
+    let data: Data
+    let width: Int
+    let height: Int
+
+    var aspectRatio: CGFloat { CGFloat(width) / CGFloat(max(height, 1)) }
+}
+
+/// Name the country a flag belongs to.
+nonisolated struct FlagPrompt: Equatable, Sendable {
+    let countryName: String
+    let flag: FlagImage
+    /// The flag of the country each option names, in option order.
+    let optionFlags: [FlagImage]
+    /// Shown after answering, for example when a country has two flags in use.
+    let note: String?
+}
+
+/// Pick the capital of a country or state.
+nonisolated struct CapitalPrompt: Equatable, Sendable {
+    let placeName: String
+    let isState: Bool
+    let capital: String
+    /// Shown after answering where capital functions are split (La Paz and Sucre).
+    let note: String?
 }
 
 nonisolated struct MathPrompt: Equatable, Sendable {

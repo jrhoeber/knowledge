@@ -2,7 +2,7 @@
 
 Native iOS general-knowledge quiz app (SwiftUI, Swift 6, iOS 26.0+, no backend, no
 third-party packages). The original product brief is `init.md`; README.md covers
-features and the question algorithm; TODO.md lists the remaining 16 topics.
+features and the question algorithm; TODO.md lists the remaining 15 topics.
 
 ## Commands
 
@@ -25,6 +25,8 @@ xcrun xcresulttool export attachments --path build/ui.xcresult --output-path bui
 # Regenerate the question bank (needs the 3.4 GB Wiktionary extract; see README)
 tools/content/.venv/bin/python -I tools/content/google_books.py   # once: Google Books shares (~18 GB streamed)
 tools/content/.venv/bin/python tools/content/build_content.py       # downloads the norms (norms.py) on first run
+tools/content/.venv/bin/python tools/content/build_content.py --reuse   # reuse the cached Wiktionary parse (~30 s)
+tools/content/.venv/bin/python tools/content/geography.py           # geography levels and sizes, for tuning
 tools/content/.venv/bin/python tools/content/vocabulary.py --reuse   # ranking and difficulty diagnostics, cached parse
 ```
 
@@ -41,7 +43,11 @@ tools/content/.venv/bin/python tools/content/vocabulary.py --reuse   # ranking a
 - `QuestionProvider` turns a content item ID into a `Question`. One provider per
   topic: `MentalMathProvider`, `VocabularyProvider` (a vocabulary item is one
   meaning of a word, from `vocab_items`; builds distractors at runtime, rejecting
-  synonyms and definitions sharing word stems via `OverlapFilter`).
+  synonyms and definitions sharing word stems via `OverlapFilter`),
+  `GeographyProvider` (maps, flags and capitals of countries and US states, from
+  `geo_items`; wrong answers come from the same layer and get closer with the
+  level: other continents, same continent, then neighbors, lookalike flags or
+  decoy cities).
   `randomItem(in:)` picks a new item within a level: uniform by default; vocabulary
   leans toward low IDs (the meanings met most often) through `CommonFirstSampler`.
 - Vocabulary difficulty is how widely a meaning is known, not word frequency:
@@ -50,6 +56,14 @@ tools/content/.venv/bin/python tools/content/vocabulary.py --reuse   # ranking a
   meanings that only restate a more common word. `spelling.py` (VarCon) puts the
   bank in American spelling: British headwords merge into the American word and
   definitions, examples and related words are respelled.
+- Geography content comes from `tools/content/geography.py`: hand-curated
+  `countries.csv` / `states.csv` (names, capitals, notes, decoys, Wikipedia
+  articles, Commons flag files) plus Natural Earth shapes (US point of view),
+  Commons flags and Wikipedia pageviews cached in `tools/content/.cache/geography/`.
+  The app decodes shapes into `Models/GeoAtlas` (unit-sphere rings, loaded on the
+  first map question) and draws them in `Features/Quiz/GeoMapView` with an
+  orthographic `MapCamera` that blends from the close-up to the zoomed-out view
+  (the globe for countries, the lower 48 for states).
 - `Data/ContentStore` opens the bundled read-only `Resources/content.sqlite`;
   `Data/ProgressStore` is the writable SQLite file in Application Support;
   `Data/SettingsStore` wraps `UserDefaults`. `Data/SQLiteDatabase` is a thin
@@ -61,7 +75,8 @@ tools/content/.venv/bin/python tools/content/vocabulary.py --reuse   # ranking a
 
 - Content item IDs are contiguous per (difficulty, operation) for math, per
   difficulty for vocabulary items (`vocab_items`, ordered within a level by how
-  often the meaning is met), and per (pos, difficulty) for vocabulary senses.
+  often the meaning is met), per (pos, difficulty) for vocabulary senses, and per
+  (difficulty, category) for geography items (map, flag, capital).
   Providers sample by ID range and throw `nonContiguousRange` if this breaks.
   `build_content.py` validates it.
 - `SCHEMA_VERSION` in `tools/content/build_content.py` must equal
@@ -80,6 +95,15 @@ tools/content/.venv/bin/python tools/content/vocabulary.py --reuse   # ranking a
   newly added derogatory words, and extend `blocklist.txt`, when the filters change.
 - `vocabulary.py --reuse` caches the parse under `PREPARED_VERSION`; bump it when
   `prepare` changes.
+- Geography: 196 countries (UN members plus Vatican City, Palestine and Taiwan)
+  and 50 states, each kind split into five equal levels. Borders follow US policy;
+  `geography.POLICY_CHECKS` asserts disputed places land in the right country, so
+  extend it rather than editing shapes by hand. Capital questions skip giveaways
+  (the capital contains the name or the reverse) and places without an
+  uncontested capital. Flags must be public domain (Oman's OGL-om license is the
+  one allowed exception, recorded in `geo_flags.license`).
+- `encode_shape` in `geography.py` and `GeoAtlas.decodeShape` are a format pair;
+  change them together.
 
 ## Conventions
 
@@ -93,7 +117,8 @@ tools/content/.venv/bin/python tools/content/vocabulary.py --reuse   # ranking a
   `topicCard.<topic>`, `option-0`…`option-3`, `continueButton`, `menuButton`,
   `menu.topics`, `menu.profile`, `topicToggle.<topic>`, `proficiencyCard.<topic>`,
   `questionPrompt`, `meaningsCard`, `feedbackTitle`, `resetProgressButton`,
-  `confirmResetProgress`). Keep them stable.
+  `confirmResetProgress`, `mapView`, `mapZoomPicker`, `flagImage`,
+  `flagComparisonCard`, `geographyNoteCard`). Keep them stable.
 
 ## Design rules (from the brief)
 

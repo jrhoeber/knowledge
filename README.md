@@ -15,9 +15,10 @@ Available now:
 | Topic | Content |
 | --- | --- |
 | Mental Math | 11,456 unique addition, subtraction, multiplication and division problems across five difficulty levels |
+| Geography | 670 questions in three rotating categories: name the highlighted country (196: the UN members plus Vatican City, Palestine and Taiwan) or US state (50) on a map, name the country a flag belongs to (196), and pick the capital of a country (180) or state (48). Maps zoom out to the globe (or the lower 48) for context, borders follow US policy, and wrong answers get closer as the level rises: other continents at level 1, neighbors, lookalike flags and famous non-capital cities (Sydney, Chicago) at level 5 |
 | Vocabulary | 45,986 questions, one per meaning, on 35,848 words drawn from the 40,000 most used in books, fiction and current English, in American spelling. The 3,000 most common are asked only on their less-known meanings (table: to postpone; bill: a proposed law), and words that only restate a more common one ("unmusical: not musical") are left out. Difficulty comes from how many adults know each meaning |
 
-Sixteen more topics are planned; see [TODO.md](TODO.md).
+Fifteen more topics are planned; see [TODO.md](TODO.md).
 
 ## Features
 
@@ -25,7 +26,10 @@ Sixteen more topics are planned; see [TODO.md](TODO.md).
   straight into questions.
 - **Multiple choice with one right answer.** Four options per question, large
   touch targets, and immediate feedback. Vocabulary answers list every common
-  meaning of the word, with an example sentence where one exists.
+  meaning of the word, with an example sentence where one exists. Map answers name
+  the places around the one asked (and mark a wrong pick), a missed flag is shown
+  next to the one that was picked, and capitals note where a country splits its
+  capital (La Paz and Sucre).
 - **Even topic rotation.** With three topics on, 30 questions split about 10/10/10,
   and the same topic never appears more than twice in a row.
 - **Spaced repetition.** Missed questions return 5–9 questions later, then at
@@ -133,7 +137,10 @@ tools/make_app_icon.py     Renders the app icon
    items, 35% for long-interval reviews). Otherwise a new item at that level is
    chosen. Drawing the level first keeps the mix of levels on target: a run of
    missed hard questions cannot crowd out the easy ones.
-4. **Common meanings first.** Within a vocabulary level, new questions lean toward
+4. **Even categories.** A topic's items at a level sit in a few ID ranges (math:
+   one per operation; geography: maps, flags and capitals), and each range is
+   equally likely, so geography is about a third each.
+5. **Common meanings first.** Within a vocabulary level, new questions lean toward
    the meanings a reader meets most often (school and work words count as twice as
    common): half come from the most frequent quarter of the level, and the rarest
    quarter still supplies about one in eight.
@@ -178,6 +185,7 @@ curl -L -o tools/content/.cache/kaikki-english.jsonl \
   https://kaikki.org/dictionary/English/kaikki.org-dictionary-English.jsonl   # about 3.4 GB
 tools/content/.venv/bin/python -I tools/content/google_books.py              # streams about 18 GB once
 tools/content/.venv/bin/python tools/content/build_content.py
+tools/content/.venv/bin/python tools/content/build_content.py --reuse   # later runs: reuse the Wiktionary parse
 ```
 
 - `mental_math.py` generates the arithmetic bank. Distractors model real mistakes:
@@ -219,6 +227,26 @@ tools/content/.venv/bin/python tools/content/build_content.py
   5 by fewer.
 - `norms.py` downloads the norms and word lists into `tools/content/.cache/norms/`
   (about 15 MB) the first time the build runs.
+- `geography.py` builds the geography questions from two hand-curated files:
+  `countries.csv` (the 196 countries with display names in American usage,
+  capitals, notes where capital functions are split, decoy cities, the Wikipedia
+  articles used to measure familiarity, and the Wikimedia Commons flag file) and
+  `states.csv`. It downloads Natural Earth's 1:10m countries (United States point
+  of view), US states and lakes, the flags, and Wikipedia pageviews into
+  `tools/content/.cache/geography/` on the first run. Borders follow US policy:
+  Crimea is part of Ukraine, the Golan Heights of Israel, Kashmir is divided along
+  the Line of Control, Kosovo is a country, Abkhazia and South Ossetia are part of
+  Georgia and Western Sahara of Morocco; the build checks these every time.
+  Countries and states are each simplified as a coverage (shared borders stay
+  identical) at two levels of detail, and large lakes are cut out so the Great
+  Lakes read as water. Each kind of question is split into five equal levels by a
+  familiarity score: log pageviews, plus area for maps (small places are hard to
+  find) and distance to the nearest lookalike for flags; a capital is harder when a
+  decoy city is better known (Sydney over Canberra). Run
+  `tools/content/.venv/bin/python tools/content/geography.py` to print the levels.
+  Pageviews cover the 60 days before the first build (Wikimedia allows anonymous
+  clients only a few requests a minute, so they are fetched 50 articles at a time)
+  and are cached, like the flags, so later builds are repeatable.
 
 ## Data sources and licenses
 
@@ -243,6 +271,14 @@ tools/content/.venv/bin/python tools/content/build_content.py
 - Spelling variants: [VarCon](http://wordlist.aspell.net/varcon/) by Kevin Atkinson
   and Benjamin Titze (part of SCOWL), under a permissive license that asks for its
   copyright notice to be kept (see the README downloaded next to it).
+- Maps: [Natural Earth](https://www.naturalearthdata.com/) 1:10m cultural and
+  physical vectors, version 5.1, in the public domain.
+- Flags: [Wikimedia Commons](https://commons.wikimedia.org/), every file in the
+  public domain except Oman's, which is under the
+  [Open Government Licence – Oman 1.0](https://www.oman.om/en/home-footer-level/faq/open-government-licence-oman)
+  and needs attribution. `geo_flags` stores each flag's source file and license.
+- Familiarity: [Wikimedia pageviews](https://wikitech.wikimedia.org/wiki/Analytics/AQS/Pageviews)
+  (CC0); only the derived difficulty levels are stored.
 
 The bank stores only difficulty levels derived from the two sets of norms, not the
 norms themselves. Confirm the terms for both before a public release (see TODO.md).

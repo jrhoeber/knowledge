@@ -21,6 +21,12 @@ enum Palette {
     static let error = Color(hex: 0xE23B2E)
     static let errorContainer = Color(hex: 0xFDE6E3)
     static let onErrorContainer = Color(hex: 0x9C1C13)
+
+    /// Maps: pale water, warm neutral land and soft borders, so the highlighted place
+    /// (in the Geography color) is the only saturated fill.
+    static let mapWater = Color(hex: 0xD8EAF1)
+    static let mapLand = Color(hex: 0xF6F0E6)
+    static let mapBorder = Color(hex: 0xB4A694)
 }
 
 struct TopicColors {
